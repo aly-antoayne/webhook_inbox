@@ -1,0 +1,13 @@
+one:
+  external_id: fixture_evt_001
+  event_type: payment.approved
+  payload: {}
+  status: pending
+  attempts: 0
+
+two:
+  external_id: fixture_evt_002
+  event_type: payment.approved
+  payload: {}
+  status: pending
+  attempts: 0
