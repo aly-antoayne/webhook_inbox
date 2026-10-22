@@ -28,5 +28,9 @@ module WebhookInbox
     # Middleware like session, flash, cookies can be added back manually.
     # Skip views, helpers and assets when generating a new resource.
     config.api_only = true
+    # Cookie sessions are used only by the authenticated dashboard forms (CSRF).
+    config.middleware.use ActionDispatch::Cookies
+    config.middleware.use ActionDispatch::Session::CookieStore,
+      key: "_webhook_inbox_dashboard", same_site: :lax, httponly: true, secure: Rails.env.production?
   end
 end

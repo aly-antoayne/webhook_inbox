@@ -15,6 +15,8 @@ class ProcessWebhookEventJobTest < ActiveJob::TestCase
 
     assert_equal "processed", event.status
     assert_equal 1, event.attempts
+    assert_equal "processed", event.webhook_attempts.last.status
+    assert_operator event.webhook_attempts.last.duration_ms, :>=, 0
   end
 
   test "nao processa novamente um evento concluido" do
@@ -44,7 +46,7 @@ class ProcessWebhookEventJobTest < ActiveJob::TestCase
 
   assert_enqueued_with(
     job: ProcessWebhookEventJob,
-    args: [event.id]
+    args: [ event.id ]
   ) do
     ProcessWebhookEventJob.perform_now(event.id)
   end
@@ -60,5 +62,6 @@ class ProcessWebhookEventJobTest < ActiveJob::TestCase
 
   assert_equal "processed", event.status
   assert_equal 2, event.attempts
+  assert_equal %w[retrying processed], event.webhook_attempts.order(:number).pluck(:status)
 end
 end

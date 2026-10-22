@@ -1,0 +1,53 @@
+#!/usr/bin/env ruby
+# A fictional sender exercising the actual signed HTTP endpoint.
+require "net/http"
+require "json"
+require "openssl"
+require "securerandom"
+
+base = URI(ENV.fetch("DEMO_BASE_URL", "http://127.0.0.1:3000"))
+abort "Use um servidor local (127.0.0.1 ou localhost)." unless %w[http https].include?(base.scheme) && %w[127.0.0.1 localhost].include?(base.host) && base.userinfo.nil?
+secret = ENV.fetch("WEBHOOK_SIGNING_SECRET") { abort "Configure WEBHOOK_SIGNING_SECRET." }
+token = ENV.fetch("WEBHOOK_READ_TOKEN") { abort "Configure WEBHOOK_READ_TOKEN." }
+abort "Use segredos de pelo menos 32 bytes." if secret.bytesize < 32 || token.bytesize < 32
+endpoint = URI.join(base.to_s, "/webhooks")
+
+def send_request(endpoint, request)
+  # Ignore proxy environment settings for this local-only demo.
+  client = Net::HTTP.new(endpoint.host, endpoint.port, nil)
+  client.use_ssl = endpoint.scheme == "https"
+  client.open_timeout = 5
+  client.read_timeout = 10
+  response = client.start { |http| http.request(request) }
+  abort "HTTP #{response.code}: verifique a configuração do servidor e da fila." unless response.is_a?(Net::HTTPSuccess)
+  JSON.parse(response.body)
+rescue SystemCallError, Timeout::Error
+  abort "Não foi possível acessar o servidor local. Inicie o Rails e confira a porta."
+end
+
+order_id = "portfolio-#{SecureRandom.hex(6)}"
+%w[order.created payment.approved].each do |type|
+  event_id = SecureRandom.uuid
+  body = { id: event_id, type: type, data: { order_id: order_id, amount_cents: 15990, currency: "BRL" } }.to_json
+  timestamp = Time.now.to_i.to_s
+  request = Net::HTTP::Post.new(endpoint)
+  request["Content-Type"] = "application/json"
+  request["X-Webhook-Timestamp"] = timestamp
+  request["X-Webhook-Signature"] = "sha256=#{OpenSSL::HMAC.hexdigest('SHA256', secret, "#{timestamp}.#{body}")}"
+  request.body = body
+  send_request(endpoint, request)
+  puts "Recebido: #{type} (#{event_id})"
+
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 30
+  loop do
+    query = Net::HTTP::Get.new(endpoint)
+    query["Authorization"] = "Bearer #{token}"
+    event = send_request(endpoint, query).find { |item| item["external_id"] == event_id }
+    abort "Evento falhou; confira os dados no dashboard." if event && event["status"] == "failed"
+    break if event && event["status"] == "processed"
+    abort "Evento ainda pendente. Inicie o worker e consulte o dashboard; os dados estão persistidos." if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    sleep 1
+  end
+  puts "Processado: #{type}"
+end
+puts "Fluxo fictício concluído. Pedido #{order_id}: BRL 159,90. Confira o status paid no dashboard."

@@ -1,0 +1,48 @@
+<% content_for :title, "Documentação" %>
+<div class="page-heading"><div><div class="docs-kicker"><span class="tag">PORTFÓLIO BACK-END</span><span class="tag green">RUBY ON RAILS · ASYNC</span></div><h1>Documentação do Webhook Inbox</h1><p>Guia de integração, ciclo de vida do evento e especificações dos endpoints HTTP.</p></div></div>
+<section id="integration">
+  <div class="section-heading"><h2><%= dashboard_icon("server") %> Arquitetura do fluxo em segundo plano</h2><small>INGESTÃO + PROCESSAMENTO ASSÍNCRONO</small></div>
+  <div class="flow-grid">
+    <article class="flow-step"><span class="tag">ETAPA 01</span><h3>1. Receber HTTP POST</h3><p>O controller valida HMAC, timestamp e o corpo JSON original antes de aceitar o evento.</p><footer>POST /webhooks →</footer></article>
+    <article class="flow-step"><span class="tag blue">ETAPA 02</span><h3>2. Salvar no SQLite</h3><p>Payload e identificador externo ficam persistidos. O índice único evita eventos duplicados.</p><footer>Estado inicial: pending →</footer></article>
+    <article class="flow-step"><span class="tag">ETAPA 03</span><h3>3. Enfileirar no Solid Queue</h3><p>O job é persistido no banco de fila. Entregas interrompidas podem ser recuperadas.</p><footer class="blue">Fila: default →</footer></article>
+    <article class="flow-step"><span class="tag green">ETAPA 04</span><h3>4. Processar no worker</h3><p>O job atualiza o pedido fictício e registra cada tentativa, preservando transações e idempotência.</p><footer>Resultado: processed / failed</footer></article>
+  </div>
+  <div class="notice docs-note"><h3>Por que separar o recebimento da execução?</h3><p>O endpoint responde após salvar e enfileirar. O worker executa a regra de negócio em segundo plano. Se a fila estiver indisponível, o evento é preservado, a API responde 503 e a recuperação tenta enfileirá-lo novamente.</p></div>
+</section>
+<section>
+  <div class="section-heading"><h2><%= dashboard_icon("grid") %> Especificação dos endpoints HTTP</h2><small>REST API</small></div>
+  <div class="endpoint-grid">
+    <article class="panel"><div class="panel-header"><strong><span class="tag">POST</span> <code>/webhooks</code></strong><span class="status-badge processed">201 Created</span></div><div class="endpoint-body"><p>Recebe um objeto com <code>id</code> e <code>type</code> textuais. O payload completo é armazenado.</p><h4>Cabeçalhos obrigatórios</h4><dl><dt>Content-Type</dt><dd>application/json</dd><dt>X-Webhook-Timestamp</dt><dd>Unix em segundos</dd><dt>X-Webhook-Signature</dt><dd>sha256=&lt;HMAC hexadecimal&gt;</dd></dl><h4>Payload de criação de pedido</h4><pre><%= highlighted_json({ id: "evt_order_001", type: "order.created", data: { order_id: "order_001", amount_cents: 15990, currency: "BRL" } }) %></pre><h4>Respostas</h4><ul class="notice-list"><li>201: salvo e enfileirado.</li><li>200: mesmo ID e mesmo payload já recebidos.</li><li>401: assinatura inválida ou expirada.</li><li>409: ID reutilizado com outro payload.</li><li>400 / 415 / 422: JSON, formato ou campos inválidos.</li><li>503: credenciais ausentes ou fila indisponível.</li></ul></div></article>
+    <article class="panel"><div class="panel-header"><strong><span class="tag blue">GET</span> <code>/webhooks</code></strong><span class="status-badge processing">200 OK</span></div><div class="endpoint-body"><p>Lista até 100 eventos mais recentes, com payload, estado e número de tentativas. A API não oferece paginação ou filtros; esses recursos pertencem ao dashboard.</p><h4>Autorização obrigatória</h4><dl><dt>Authorization</dt><dd>Bearer &lt;WEBHOOK_READ_TOKEN&gt;</dd><dt>Cache-Control</dt><dd>no-store</dd></dl><h4>Exemplo em PowerShell</h4><pre>. .\.env.local.ps1
+Invoke-RestMethod -Uri "http://localhost:3000/webhooks" -Headers @{
+  Authorization = "Bearer $env:WEBHOOK_READ_TOKEN"
+}</pre><h4>Resposta ilustrativa</h4><pre><%= highlighted_json([{ external_id: "evt_order_001", event_type: "order.created", status: "processed", attempts: 1 }]) %></pre><p><small>A resposta real inclui o payload, ID interno, datas e enqueued_at. Nunca passe o token em query strings.</small></p></div></article>
+  </div>
+</section>
+<section>
+  <div class="section-heading"><h2><%= dashboard_icon("refresh") %> Ciclo de vida do evento</h2><small>ESTADOS DO PROCESSAMENTO</small></div>
+  <div class="state-grid">
+    <article class="state-card"><%= status_badge("pending") %><h3>Aguardando fila</h3><p>O evento está salvo e aguarda execução ou uma nova tentativa após falha temporária.</p><footer>Dados preservados em SQLite</footer></article>
+    <article class="state-card"><%= status_badge("processing") %><h3>Execução ativa</h3><p>O job bloqueia o registro e aplica a regra de negócio dentro de uma transação.</p><footer>ProcessWebhookEventJob</footer></article>
+    <article class="state-card"><%= status_badge("processed") %><h3>Finalizado</h3><p>O processamento foi concluído. Um job repetido não reaplica um evento já processado.</p><footer>Pedido: pending → paid → refunded</footer></article>
+    <article class="state-card"><%= status_badge("failed") %><h3>Revisão necessária</h3><p>Dados inválidos ou tentativas esgotadas. Inspecione o payload antes de reprocessar.</p><footer>Reenvio manual pela área autenticada</footer></article>
+  </div>
+</section>
+<section class="panel padded" id="security" style="margin-top:24px">
+  <h2><%= dashboard_icon("lock") %> Assinatura, idempotência e duplicados</h2>
+  <p>O protocolo de demonstração usa HMAC-SHA256 sobre <code>timestamp.corpo_original</code>. A janela é de cinco minutos, e o corpo assinado não pode ser alterado. O segredo de assinatura e o token de leitura devem ter pelo menos 32 bytes.</p>
+  <div class="docs-code-grid"><div><span class="eyebrow purple">01. Validação de assinatura</span><p>Comparação em tempo constante e checagem do timestamp.</p><pre>HMAC-SHA256(secret, "timestamp.raw_body")
+X-Webhook-Signature: sha256=&lt;digest&gt;</pre></div><div><span class="eyebrow blue">02. Identificação única no banco</span><p>Deduplicação por identificador externo e lock durante o processamento.</p><pre>unique index: webhook_events.external_id
+event.with_lock { process(event) }</pre></div></div>
+  <p><small>A entrega é pelo menos uma vez. Um crash pode produzir jobs duplicados, que devem continuar idempotentes. Este protocolo precisa ser adaptado ao contrato do provedor antes de uma integração real.</small></p>
+</section>
+<section id="demo-guide">
+  <div class="section-heading"><h2><%= dashboard_icon("terminal") %> Operação e demonstração</h2><small>ESTADOS REAIS DA INTERFACE</small></div>
+  <div class="interface-states">
+    <article><%= dashboard_icon("inbox") %><h3>Nenhum evento registrado</h3><p>Use a demonstração autenticada ou envie um webhook assinado para popular o painel.</p><% unless Rails.env.production? %><button class="button secondary small" data-open-demo>Enviar evento de teste →</button><% end %></article>
+    <article><%= dashboard_icon("server") %><h3>Worker parado</h3><p>Os eventos permanecem na fila persistente. Inicie o worker no terminal:</p><pre>bundle exec ruby bin/jobs --mode async</pre><small>O modo async do supervisor usa threads; a fila continua persistente.</small></article>
+    <article><%= dashboard_icon("alert") %><h3>Falha na consulta da fila</h3><p>O painel informa indisponibilidade sem inventar contagens. Verifique a conexão e as migrations.</p><pre>bundle exec rails db:prepare</pre><a class="button secondary small" href="/dashboard#workers">Consultar workers →</a></article>
+  </div>
+  <div class="notice" style="margin-top:20px"><h3>Demonstração HTTP de ponta a ponta</h3><p>Com as credenciais locais configuradas, servidor e worker ativos, execute <code>ruby bin/demo-payments</code>. O script envia um pedido e um pagamento assinado. A demonstração pelo botão do painel cria os registros internamente e não testa a assinatura HTTP.</p></div>
+</section>

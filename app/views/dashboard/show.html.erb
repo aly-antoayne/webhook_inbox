@@ -1,0 +1,43 @@
+<% content_for :title, "Evento #{@event.external_id}" %>
+<div class="detail-layout">
+  <aside class="detail-stream" aria-label="Eventos recentes">
+    <h2>Eventos recentes <span class="tag">Últimos 8</span></h2>
+    <% @recent_events.each do |event| %><a class="stream-row <%= 'selected' if event.id == @event.id %>" href="<%= dashboard_event_path(event) %>" <%= 'aria-current=page' if event.id == @event.id %>><div class="stream-top"><span class="http-method">POST</span><%= status_badge(event.status) %></div><strong class="mono"><%= event.external_id %></strong><small><%= event.event_type %></small></a><% end %>
+    <a class="button secondary full" href="<%= dashboard_events_path %>">Ver todos os eventos <%= dashboard_icon("arrow") %></a>
+  </aside>
+  <article class="detail-inspector">
+    <header class="inspector-heading">
+      <div class="title-line"><h1><%= @event.external_id %></h1><%= status_badge(@event.status) %></div>
+      <div class="panel-actions"><% if @event.status == "failed" %><%= button_to retry_dashboard_event_path(@event), method: :post, class: "button secondary small", form: { "data-submission": true } do %><%= dashboard_icon("refresh") %> Reprocessar evento<% end %><% end %><a class="icon-button" href="<%= dashboard_events_path %>" title="Voltar aos eventos" aria-label="Fechar detalhes"><%= dashboard_icon("close") %></a></div>
+    </header>
+    <div class="inspector-body">
+      <section class="metadata">
+        <div class="metadata-title"><span>Metadados da ingestão</span><span class="purple">ID interno: <%= @event.id %></span></div>
+        <dl class="metadata-grid">
+          <div><dt>Tipo do evento</dt><dd><span class="type-tag"><%= @event.event_type %></span></dd></div>
+          <div><dt>Número de tentativas</dt><dd><strong><%= @event.attempts %></strong> <small>execuções registradas</small></dd></div>
+          <div><dt>Recebido em</dt><dd><%= dashboard_time(@event.created_at) %></dd></div>
+          <div><dt>Última atualização</dt><dd><%= dashboard_time(@event.updated_at) %></dd></div>
+          <div><dt>Enfileirado em</dt><dd><%= dashboard_time(@event.enqueued_at) %></dd></div>
+          <div><dt>Job / fila</dt><dd><code>ProcessWebhookEventJob / default</code></dd></div>
+        </dl>
+        <div class="metadata-total"><span>Tempo nas tentativas registradas</span><strong class="green"><%= @attempts.any? ? "#{@attempts.sum(&:duration_ms)} ms" : "Não disponível" %></strong></div>
+      </section>
+      <section class="payload-panel">
+        <div class="payload-heading"><div><strong>JSON Payload</strong> <small>(application/json)</small> <span class="tag"><%= @event.payload.to_json.bytesize %> B</span></div><button class="icon-button" data-copy-target="event-json"><%= dashboard_icon("copy") %> Copiar JSON</button></div>
+        <pre id="event-json"><%= highlighted_json(@event.payload) %></pre>
+        <div id="copy-feedback" class="feedback" role="status" aria-live="polite"></div>
+      </section>
+      <section aria-labelledby="attempts-title">
+        <div class="section-heading"><h2 id="attempts-title"><%= dashboard_icon("chart") %> Histórico de tentativas</h2><small>ACTIVE JOB / SOLID QUEUE</small></div>
+        <% if @attempts.any? %>
+          <% if @attempts.size < @event.attempts %><p class="muted">As <%= @event.attempts - @attempts.size %> tentativas anteriores à instrumentação não têm detalhes registrados.</p><% end %>
+          <div class="timeline">
+            <% @attempts.each do |attempt| %><article class="attempt <%= attempt.status %>"><div class="attempt-heading"><div><strong>Tentativa <%= attempt.number %></strong> <%= status_badge(attempt.status) %></div><small><%= attempt.started_at.strftime("%H:%M:%S") %> · <%= attempt.duration_ms %> ms</small></div><p><%= attempt.message %></p><div class="attempt-footer"><span>ProcessWebhookEventJob · default</span><time datetime="<%= attempt.finished_at.iso8601 %>"><%= dashboard_time(attempt.finished_at) %></time></div></article><% end %>
+          </div>
+        <% else %><div class="inspector-empty"><%= @event.attempts.zero? ? "O evento ainda não foi executado. Inicie o worker e atualize a página para acompanhar." : "Este evento foi processado antes do registro detalhado de tentativas. Não há timestamps ou mensagens históricos disponíveis." %></div><% end %>
+      </section>
+    </div>
+    <footer class="inspector-footer"><span><%= dashboard_icon("lock") %> Área de inspeção autenticada</span><a href="<%= dashboard_documentation_path(anchor: "security") %>">Entender assinatura e reenvios →</a></footer>
+  </article>
+</div>

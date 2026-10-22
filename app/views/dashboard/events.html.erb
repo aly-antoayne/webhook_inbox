@@ -1,0 +1,27 @@
+<% content_for :title, "Eventos" %>
+<div class="page-heading"><div><div class="title-line"><h1>Eventos</h1><span class="tag"><%= @filtered_count %> registros</span></div><p>Monitoramento dos payloads recebidos pelo endpoint HTTP.</p></div><div class="heading-actions"><button class="button secondary" data-refresh><%= dashboard_icon("refresh") %> Atualizar</button><% unless Rails.env.production? %><button class="button primary" data-open-demo><%= dashboard_icon("send") %> Enviar evento de teste</button><% end %></div></div>
+<div class="list-tabs"><span class="active"><%= dashboard_icon("table") %> Lista de eventos <span class="tag"><%= @filtered_count %></span></span><small>Horários em UTC · dados consultados ao carregar</small></div>
+<section class="filters" aria-label="Filtrar eventos">
+  <form method="get" action="<%= dashboard_events_path %>" class="filter-fields">
+    <label class="filter-input" for="event-search"><%= dashboard_icon("search") %><span>id:</span><input id="event-search" name="q" value="<%= @query %>" placeholder="Buscar por identificador ou tipo..." maxlength="100"></label>
+    <label class="sr-only" for="event-type">Tipo de evento</label><select id="event-type" name="event_type"><option value="">Todos os tipos</option><% @event_types.each do |type| %><option value="<%= type %>" <%= "selected" if type == @event_type %>><%= type %></option><% end %></select>
+    <input type="hidden" name="status" value="<%= @status %>"><button class="button secondary" type="submit">Filtrar</button><a class="button secondary" href="<%= dashboard_events_path %>">Limpar filtros</a>
+  </form>
+  <nav class="filter-chips" aria-label="Filtrar por estado"><small>ESTADO:</small><a href="<%= dashboard_events_path(event_filters(status: "")) %>" class="<%= 'active' if @status.blank? %>">Todos <small><%= @global_counts.values.sum %></small></a><% %w[processed pending processing failed].each do |status| %><a href="<%= dashboard_events_path(event_filters(status: status)) %>" class="<%= 'active' if @status == status %>"><%= status_badge(status) %><small>(<%= @global_counts.fetch(status, 0) %>)</small></a><% end %></nav>
+</section>
+<section class="panel" id="events" aria-label="Resultados">
+  <%= render "events_table", events: @events %>
+  <div class="table-footer"><span>Exibindo <strong><%= @filtered_count.zero? ? 0 : (@page - 1) * 10 + 1 %>–<%= [@page * 10, @filtered_count].min %></strong> de <strong><%= @filtered_count %></strong> eventos</span>
+    <nav class="pagination" aria-label="Paginação">
+      <% if @page > 1 %><a href="<%= dashboard_events_path(event_filters(page: @page - 1)) %>">‹ Anterior</a><% else %><span class="disabled" aria-disabled="true">‹ Anterior</span><% end %>
+      <% pages = ([1, @pages] + ((@page - 1)..(@page + 1)).to_a).select { |number| number.between?(1, @pages) }.uniq.sort %>
+      <% pages.each_with_index do |number, index| %><% if index > 0 && number - pages[index - 1] > 1 %><span>…</span><% end %><% if number == @page %><span class="current" aria-current="page"><%= number %></span><% else %><a href="<%= dashboard_events_path(event_filters(page: number)) %>"><%= number %></a><% end %><% end %>
+      <% if @page < @pages %><a href="<%= dashboard_events_path(event_filters(page: @page + 1)) %>">Próxima ›</a><% else %><span class="disabled" aria-disabled="true">Próxima ›</span><% end %>
+    </nav>
+  </div>
+</section>
+<div class="mini-metrics">
+  <article class="metric-card"><div class="metric-label">Taxa de processamento (24h)<span class="green"><%= dashboard_icon("chart") %></span></div><div class="metric-main"><strong class="metric-value"><%= @metrics.success_rate %>%</strong></div><div class="progress green"><span style="width:<%= @metrics.success_rate %>%"></span></div></article>
+  <article class="metric-card"><div class="metric-label">Fila em espera<span class="yellow"><%= dashboard_icon("clock") %></span></div><div class="metric-main"><strong class="metric-value"><%= @workers[:available] ? @workers[:counts]["Prontos"] : "—" %></strong><small><%= @workers[:adapter] %></small></div><small><%= @workers[:available] ? "Jobs prontos para execução" : "Backend indisponível para consulta" %></small></article>
+  <article class="metric-card"><div class="metric-label">Eventos com falha<span class="red"><%= dashboard_icon("alert") %></span></div><div class="metric-main"><strong class="metric-value red"><%= @global_counts.fetch("failed", 0) %></strong><small>aguardando revisão</small></div><a href="<%= dashboard_events_path(status: "failed") %>">Inspecionar falhas →</a></article>
+</div>

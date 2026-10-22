@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title><%= content_for?(:title) ? yield(:title) : "Webhook Inbox" %> · Pipeline Console</title>
+  <%= csrf_meta_tags %>
+  <link rel="stylesheet" href="/fonts/fonts.css">
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/dashboard.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Ir para o conteúdo</a>
+  <aside class="sidebar" id="sidebar" aria-label="Navegação principal">
+    <a class="brand" href="/"><span class="brand-mark"><%= dashboard_icon("terminal") %></span><span class="brand-text">Webhook Inbox<small>Pipeline Console</small></span></a>
+    <div class="new-webhook"><a class="button secondary full" href="<%= dashboard_documentation_path(anchor: "integration") %>"><%= dashboard_icon("plus") %><span class="nav-text">Novo Webhook</span></a></div>
+    <nav class="side-nav">
+      <a href="/" <%= 'aria-current=page' if @section == "overview" %> title="Visão geral"><%= dashboard_icon("grid") %><span class="nav-text">Visão geral</span></a>
+      <a href="<%= dashboard_events_path %>" <%= 'aria-current=page' if @section == "events" %> title="Eventos"><%= dashboard_icon("table") %><span class="nav-text">Eventos</span></a>
+      <a href="<%= dashboard_documentation_path %>" <%= 'aria-current=page' if @section == "docs" %> title="Documentação"><%= dashboard_icon("book") %><span class="nav-text">Documentação</span></a>
+    </nav>
+    <div class="sidebar-bottom"><div class="environment"><%= dashboard_icon("terminal") %> <%= Rails.env.production? ? "Ambiente de produção" : "Ambiente de demonstração" %></div><div class="sidebar-version"><span>Rails <%= Rails.version %> · Solid Queue</span><span class="dot" aria-hidden="true"></span></div></div>
+  </aside>
+  <header class="topbar">
+    <button class="icon-button mobile-menu" data-toggle-menu aria-controls="sidebar" aria-expanded="false" aria-label="Abrir navegação"><%= dashboard_icon("menu") %></button>
+    <form action="<%= dashboard_events_path %>" method="get" class="top-search" role="search">
+      <%= dashboard_icon("search") %><label class="sr-only" for="global-search">Buscar evento ou tipo</label><input id="global-search" name="q" value="<%= @query %>" placeholder="Filtrar por evt_id ou tipo..." maxlength="100">
+    </form>
+    <nav class="quick-filters" aria-label="Filtros rápidos"><% %w[pending processing processed failed].each do |status| %><a href="<%= dashboard_events_path(status: status) %>" class="<%= 'active' if @status == status %>"><%= DashboardHelper::STATUS_LABELS[status] %></a><% end %></nav>
+    <div class="top-actions">
+      <% unless Rails.env.production? %><button class="button small top-demo" data-open-demo><%= dashboard_icon("send") %> Enviar evento de teste</button><% end %>
+      <button class="icon-button" data-refresh aria-label="Atualizar página" title="Atualizar"><%= dashboard_icon("refresh") %></button>
+      <a class="icon-button" href="<%= dashboard_events_path(status: "failed") %>" aria-label="Ver eventos com falha" title="Falhas"><%= dashboard_icon("alert") %></a>
+      <a class="icon-button" href="<%= dashboard_documentation_path %>" aria-label="Ajuda e documentação" title="Documentação"><%= dashboard_icon("book") %></a>
+      <span class="avatar" title="Área autenticada">OP</span>
+    </div>
+  </header>
+  <main id="main-content">
+    <% notices = { "demo" => "Eventos fictícios enviados à fila. Atualize a página para acompanhar o processamento.", "retry" => "Evento reenfileirado. Aguarde o worker concluir o processamento.", "retry_skipped" => "Somente eventos com falha podem ser reprocessados.", "queue_unavailable" => "Eventos salvos. A fila está indisponível; a recuperação automática tentará enfileirá-los novamente." } %>
+    <% if notices.key?(params[:notice]) %><div class="notice" role="status"><%= dashboard_icon("inbox") %><%= notices[params[:notice]] %></div><% end %>
+    <%= yield %>
+    <% unless action_name == "show" %><footer class="page-footer"><span>Webhook Inbox / Pipeline Console</span><span>Atualizado em <%= dashboard_time(Time.current) %> · Atualização manual</span></footer><% end %>
+  </main>
+  <% unless Rails.env.production? %>
+    <dialog id="demo-dialog" aria-labelledby="demo-title">
+      <div class="dialog-heading"><h2 id="demo-title">Enviar evento de teste</h2><button class="icon-button" type="button" data-close-dialog aria-label="Fechar demonstração"><%= dashboard_icon("close") %></button></div>
+      <%= form_with url: dashboard_demo_path, method: :post, local: true, html: { class: "dialog-body", "data-submission": true } do |form| %>
+        <p>Crie um pedido e eventos fictícios pela área autenticada. O worker aplica as mudanças; nenhum pagamento real é executado.</p>
+        <%= form.label :scenario, "Cenário" %><%= form.select :scenario, DashboardDemo::SCENARIOS.map { |key, label| [label, key] } %>
+        <pre id="demo-preview"><%= JSON.pretty_generate({ id: "evt_gerado_automaticamente", type: "payment.approved", data: { order_id: "demo_gerado_automaticamente", amount_cents: 15990, currency: "BRL" } }) %></pre>
+        <p>Para testar a assinatura pelo endpoint HTTP, execute <code>ruby bin/demo-payments</code>.</p>
+        <div class="dialog-actions"><button type="button" class="button secondary" data-close-dialog>Cancelar</button><button type="submit" class="button primary"><%= dashboard_icon("send") %> Enfileirar demonstração</button></div>
+      <% end %>
+    </dialog>
+    <noscript><p class="notice">Os filtros e a navegação funcionam sem JavaScript. Para gerar exemplos, execute <code>bundle exec rails demo:orders</code>.</p></noscript>
+  <% end %>
+</body>
+</html>

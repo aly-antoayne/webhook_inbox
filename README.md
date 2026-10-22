@@ -1,136 +1,213 @@
 # Webhook Inbox
 
-API em Ruby on Rails para receber webhooks em JSON, armazenar os eventos e processá-los em segundo plano. O projeto demonstra deduplicação por identificador externo, acompanhamento de status e novas tentativas após falhas temporárias.
+Aplicação Ruby on Rails que demonstra pagamentos fictícios de ponta a ponta: webhook assinado → evento persistido → worker → pedido atualizado de `pending` para `paid`.
 
-O processamento atual registra a tentativa no log e marca o evento como concluído; não realiza operações de pagamento nem integrações externas.
+O dashboard em `/dashboard` (ou `/`) reúne eventos, pedidos e workers. O projeto não faz cobranças nem reembolsos bancários e não está conectado a um provedor real.
 
-## Tecnologias
+## Stack
 
-- Ruby 3.4.2 (versão definida em `.ruby-version`).
-- Rails 8.1.4, em modo API.
-- SQLite para persistência e Puma como servidor.
-- Active Job com adaptador `:async` em desenvolvimento e Solid Queue em produção.
-- Minitest para testes de modelos, controllers e jobs.
+- Ruby 3.4.2, Rails 8.1.4, SQLite e Puma.
+- Active Job com Solid Queue persistente em desenvolvimento e produção.
+- Minitest com adaptador de teste em memória.
 
-## Executar localmente
+## Executar no Windows / PowerShell
 
-Com Ruby e Bundler instalados:
-
-```sh
-git clone https://github.com/aly-antoayne/webhook_inbox.git
-cd webhook_inbox
+```powershell
 bundle install
 bundle exec rails db:prepare
+```
+
+Gere credenciais locais **uma vez**. Repetir o bloco troca as credenciais; reinicie o servidor se fizer isso.
+
+```powershell
+$signingSecret = ruby -rsecurerandom -e 'puts SecureRandom.hex(32)'
+$readToken = ruby -rsecurerandom -e 'puts SecureRandom.hex(32)'
+$dashboardPassword = ruby -rsecurerandom -e 'puts SecureRandom.hex(24)'
+@(
+  ('$env:WEBHOOK_SIGNING_SECRET = "' + $signingSecret + '"')
+  ('$env:WEBHOOK_READ_TOKEN = "' + $readToken + '"')
+  '$env:DASHBOARD_USERNAME = "portfolio"'
+  ('$env:DASHBOARD_PASSWORD = "' + $dashboardPassword + '"')
+) | Set-Content .env.local.ps1
+```
+
+O arquivo `.env.local.ps1` contém segredos, fica ignorado pelo Git e deve permanecer local. Rails não o carrega automaticamente: execute-o em cada terminal que precisar dessas variáveis.
+
+**Terminal 1 — servidor:**
+
+```powershell
+. .\.env.local.ps1
 bundle exec rails server
 ```
 
-A API fica disponível em `http://localhost:3000`. O repositório é privado e exige acesso autorizado para clonagem. No Windows, utilize RubyInstaller com Devkit caso seja necessário compilar dependências nativas.
-
-Em desenvolvimento, os jobs executam dentro do processo da aplicação. Não é necessário iniciar um worker separado; jobs pendentes em memória podem ser perdidos quando o servidor reinicia.
-
-## Endpoints
-
-| Método | Rota | Comportamento |
-| --- | --- | --- |
-| POST | `/webhooks` | Salva um novo evento e agenda seu processamento. |
-| GET | `/webhooks` | Retorna até 100 eventos, do mais recente para o mais antigo. |
-
-### Receber um evento
-
-O corpo deve ser JSON e conter `id` e `type`. O payload completo é armazenado, incluindo campos adicionais.
-
-Exemplo em PowerShell:
+**Terminal 2 — worker persistente:**
 
 ```powershell
-$payload = @{
-  id = "evt_001"
-  type = "payment.approved"
-  data = @{
-    payment_id = "pay_123"
-    amount_cents = 15000
-    currency = "BRL"
-  }
-} | ConvertTo-Json -Depth 5
-
-Invoke-RestMethod -Uri "http://localhost:3000/webhooks" -Method Post -ContentType "application/json" -Body $payload
+bundle exec ruby bin/jobs --mode async
 ```
 
-Respostas:
+O argumento `--mode async` faz o supervisor do Solid Queue usar threads, compatíveis com Windows. A fila continua persistida em SQLite; isso é diferente do adaptador Active Job `:async`. Não é mais necessário definir `USE_SOLID_QUEUE`.
 
-- `201 Created`: evento criado; retorna o registro salvo.
-- `200 OK`: identificador já recebido; retorna a mensagem `Evento já recebido` e, quando recuperado pelo controller, o registro existente.
-- `422 Unprocessable Entity`: erro de validação, como ausência de identificador ou tipo; retorna um objeto com `errors`.
+Abra `http://localhost:3000/dashboard` e use o usuário `portfolio` e a senha gerada no arquivo local. O servidor precisa ser reiniciado para receber novas variáveis de ambiente.
 
-O campo `id` enviado no payload é salvo como `external_id`. O campo `id` do registro retornado é o identificador interno do banco. Repetir um identificador externo não atualiza o payload anterior nem agenda outro job. A unicidade é validada pelo modelo e por um índice único no banco.
+## Demonstração de pagamentos
 
-### Consultar eventos
+Com servidor e worker ativos, em um terceiro terminal:
 
 ```powershell
-Invoke-RestMethod -Uri "http://localhost:3000/webhooks" -Method Get
+. .\.env.local.ps1
+ruby bin/demo-payments
 ```
 
-A listagem inclui payload, status, número de tentativas e datas de criação e atualização. Não há paginação ou filtros implementados.
+O remetente fictício faz requisições HTTP reais, assinadas com HMAC. Ele envia `order.created`, aguarda o processamento, envia `payment.approved` e consulta os eventos com o token de leitura. Um pedido de BRL 159,90 aparece como `paid` no dashboard.
 
-## Processamento e novas tentativas
+Cada execução usa identificadores novos. Para outra porta local:
 
-O `ProcessWebhookEventJob` usa a fila `default`:
+```powershell
+$env:DEMO_BASE_URL = "http://127.0.0.1:3001"
+ruby bin/demo-payments
+```
 
-1. Carrega o evento e encerra se ele já estiver `processed`.
-2. Incrementa `attempts` e altera o status para `processing`.
-3. Registra o processamento no log e altera o status para `processed`.
+O cliente aceita apenas `localhost` e `127.0.0.1`. Se o worker estiver parado, o evento permanece salvo e enfileirado; o cliente informa o tempo de espera excedido.
 
-Eventos novos começam em `pending`. Para `TemporaryError`, o job permite até três execuções no total, com espera de cinco segundos entre tentativas. Ao esgotá-las, marca o evento como `failed`. Essa política não abrange automaticamente qualquer tipo de exceção.
+Para popular também exemplos de pedido pendente, reembolso e falha temporária:
 
-Para demonstrar uma falha temporária, envie um identificador novo e `simulate_failure: true` na raiz do JSON:
+```powershell
+bundle exec rails demo:orders
+```
 
-```json
-{
-  "id": "evt_retry_001",
-  "type": "payment.approved",
-  "simulate_failure": true,
-  "data": {}
+Essa tarefa funciona apenas em desenvolvimento e insere exemplos diretamente no banco antes de enfileirá-los. Use `bin/demo-payments` para demonstrar a assinatura e a API HTTP.
+
+## Endpoints e proteção
+
+| Método | Rota | Autorização | Resultado |
+| --- | --- | --- | --- |
+| POST | `/webhooks` | Assinatura HMAC e timestamp | Salva e enfileira o evento. |
+| GET | `/webhooks` | `Authorization: Bearer <WEBHOOK_READ_TOKEN>` | Até 100 eventos mais recentes. |
+| GET | `/`, `/dashboard` | HTTP Basic | Indicadores, pedidos, eventos e workers. |
+| GET | `/dashboard/events` | HTTP Basic | Busca, filtros e paginação de eventos. |
+| GET | `/dashboard/events/:id` | HTTP Basic | Payload, metadados e histórico de tentativas. |
+| GET | `/dashboard/documentation` | HTTP Basic | Guia de integração e ciclo do evento. |
+| POST | `/dashboard/demo` | HTTP Basic + CSRF | Enfileira um cenário fictício; bloqueado em produção. |
+| POST | `/dashboard/events/:id/retry` | HTTP Basic + CSRF | Reenfileira um evento com falha. |
+
+As consultas e o recebimento ficam indisponíveis se suas credenciais não estiverem configuradas, inclusive em desenvolvimento. As respostas do painel e da API usam `Cache-Control: no-store`.
+
+### Assinatura de eventos
+
+Este é um protocolo de demonstração próprio, não a implementação de um provedor específico:
+
+- `WEBHOOK_SIGNING_SECRET`: segredo compartilhado com o remetente, com pelo menos 32 bytes.
+- `X-Webhook-Timestamp`: horário Unix em segundos, decimal.
+- `X-Webhook-Signature`: `sha256=<digest hexadecimal minúsculo>`.
+- Digest: HMAC-SHA256 do texto `timestamp.corpo_original`, usando o segredo.
+- Tolerância: cinco minutos para timestamps no passado ou no futuro.
+- A comparação é feita em tempo constante. Alterar espaços, valores ou qualquer byte do corpo invalida a assinatura.
+- Apenas o JSON assinado é utilizado: parâmetros de query não sobrescrevem `id`, `type` ou o payload.
+- Reenvios dentro da janela são deduplicados por `id`; reenvios posteriores precisam de timestamp e assinatura novos.
+
+Exemplo da composição no remetente Ruby:
+
+```ruby
+timestamp = Time.now.to_i.to_s
+digest = OpenSSL::HMAC.hexdigest("SHA256", secret, "#{timestamp}.#{body}")
+signature = "sha256=#{digest}"
+```
+
+O corpo deve ser um objeto JSON com `id` e `type` textuais, não vazios e com até 255 caracteres. O payload inteiro é armazenado.
+
+| Código HTTP | Significado |
+| --- | --- |
+| 201 | Evento salvo e enfileirado. |
+| 200 | Mesmo evento e mesmo payload já recebidos. |
+| 400 | JSON inválido. |
+| 401 | Assinatura ausente, inválida ou expirada; ou token de consulta inválido. |
+| 409 | Identificador reutilizado com outro payload, ou recebimento concorrente que requer reenvio. |
+| 415 | Corpo enviado sem `Content-Type: application/json`. |
+| 422 | Campos obrigatórios inválidos. |
+| 503 | Credenciais não configuradas, ou evento salvo aguardando recuperação do enfileiramento. |
+
+O `id` externo vira `external_id`; o `id` retornado no registro é o identificador interno do banco. Em caso de 503 da fila, reenvie o mesmo evento com assinatura atualizada. O payload original permanece salvo.
+
+### Consulta autenticada
+
+```powershell
+. .\.env.local.ps1
+Invoke-RestMethod -Uri "http://localhost:3000/webhooks" -Headers @{
+  Authorization = "Bearer $env:WEBHOOK_READ_TOKEN"
 }
 ```
 
-Nesse cenário, a primeira execução retorna o status para `pending` e lança a falha simulada; a segunda conclui o processamento.
+O token de leitura também deve ter pelo menos 32 bytes. Ele é independente do segredo de assinatura e não deve ser enviado em query strings.
+
+## Contrato de pedidos
+
+```json
+{
+  "id": "evt_order_001",
+  "type": "order.created",
+  "data": {
+    "order_id": "order_001",
+    "amount_cents": 15990,
+    "currency": "BRL"
+  }
+}
+```
+
+Para aprovar ou reembolsar, envie um novo `id` com `payment.approved` ou `payment.refunded`, mantendo os dados do pedido.
+
+- `Order` guarda identificador, valor inteiro em centavos, moeda e estado.
+- Estados: `pending` → `paid` → `refunded`.
+- Valor não negativo; moedas BRL, USD e EUR; apenas reembolso integral.
+- Valor ou moeda divergente faz o evento falhar sem alterar o pedido.
+- Uma aprovação antes da criação também cria o pedido; eventos atrasados não regridem seu estado.
+- Eventos genéricos de pagamento sem `data.order_id` continuam processados sem criar pedidos.
+- A validação de domínio é assíncrona: o recebimento pode retornar 201 e o processamento terminar em `failed`.
+
+## Fila, recuperação e tentativas
+
+Solid Queue persiste os jobs no banco `storage/development_queue.sqlite3` em desenvolvimento e no banco de fila configurado para produção. Reiniciar o servidor não apaga os jobs. O worker separado precisa estar ativo.
+
+O evento é salvo antes do enfileiramento. `enqueued_at` só é preenchido depois que a fila aceita o job. Se a fila falhar, o evento permanece pendente e o endpoint responde 503. A tarefa recorrente `RecoverWebhookDeliveriesJob` recupera até 100 eventos sem marca de entrega por execução, a cada minuto; um reenvio também tenta recuperar a entrega.
+
+O scheduler do Solid Queue precisa estar ativo para essa recuperação automática. Não use `--skip-recurring` no uso normal.
+
+Essa entrega é **pelo menos uma vez**: uma interrupção entre gravar o job e marcar o evento pode gerar outro job. O processamento usa transação e lock no evento, e ignora eventos já processados. Isso não equivale a uma garantia de execução única para integrações externas.
+
+`ProcessWebhookEventJob` incrementa `attempts` e aplica o evento ao pedido. Cada execução registra início, término, resultado e mensagem em `WebhookAttempt`. `TemporaryError` permite até três execuções no total, com intervalo de cinco segundos; o esgotamento marca `failed`. Dados de pedido inválidos também marcam `failed`. Eventos anteriores à criação desse histórico mantêm seu contador, sem gerar tentativas retroativas fictícias.
+
+Para demonstrar uma falha temporária, adicione `"simulate_failure": true` na raiz de um novo payload: a primeira tentativa volta a `pending`, e a seguinte pode concluir.
+
+## Dashboard
+
+- **Visão geral:** indicadores e gráfico por hora ou dia, com períodos de 24 horas ou sete dias; cinco eventos recentes e dez pedidos atualizados recentemente.
+- **Eventos:** busca por identificador ou tipo, filtros por status e tipo, dez registros por página e estado vazio quando não há resultados.
+- **Detalhes:** JSON com destaque de sintaxe, cópia do payload, metadados e histórico real de tentativas com duração. O botão de reprocessamento aparece para eventos com falha.
+- **Workers:** jobs prontos, agendados, em execução e falhas da fila; até 50 processos Solid Queue com host, PID e último heartbeat.
+- **Documentação:** arquitetura, autenticação dos endpoints, contrato de pedidos e estados do processamento.
+- **Demonstração:** botão “Enviar evento de teste” com pagamento aprovado, falha temporária, reembolso e dados inválidos. Disponível fora de produção, insere eventos diretamente e usa a fila configurada. Para testar a assinatura HTTP, use `bin/demo-payments`.
+
+Use **Atualizar** para consultar novos dados. Os horários são exibidos em UTC. Os gráficos agrupam os registros por hora ou dia, incluindo o intervalo atual ainda em andamento. Um processo registrado não garante saúde: confira o heartbeat. Falhas de domínio tratadas pelo job aparecem nos eventos, não necessariamente nas falhas da fila.
+
+O visual adapta as quatro telas do arquivo `stitch_webhook_inbox_dashboard.zip`: visão geral, eventos, detalhes e documentação. As views ERB usam `public/dashboard.css` e `public/dashboard.js`, com navegação adaptada para celular, foco visível e suporte à preferência por movimento reduzido. As fontes Geist e Space Grotesk são servidas localmente; suas licenças ficam em `public/fonts`. A interface não depende de CDN, Tailwind em tempo de execução ou serviços de analytics.
+
+Depois de atualizar uma instalação existente, execute `bundle exec rails db:prepare` e reinicie o servidor e o worker para carregar as novas tabelas e o registro de tentativas.
 
 ## Testes
 
-```sh
+```powershell
 bundle exec rails db:test:prepare
 bundle exec rails test
 ```
 
-Para executar somente os testes do job:
+A suíte cobre assinatura, timestamps, adulteração do corpo, consulta autenticada, proteção do dashboard e CSRF, filtros e paginação, demonstração, reprocessamento, histórico de tentativas, deduplicação, recuperação de enfileiramento, pedidos fora de ordem e o fluxo HTTP assinado de `pending` para `paid`.
 
-```sh
-bundle exec rails test test/jobs/process_webhook_event_job_test.rb
-```
+## Configuração e limites
 
-A suíte cobre validações, recebimento e deduplicação de eventos, processamento, eventos já concluídos e recuperação após falha temporária.
+As variáveis necessárias são `WEBHOOK_SIGNING_SECRET`, `WEBHOOK_READ_TOKEN`, `DASHBOARD_USERNAME` e `DASHBOARD_PASSWORD`. Em produção, injete-as por um gerenciador de segredos e use HTTPS. A API e o painel têm credenciais separadas; não há contas de usuário, permissões por cliente ou isolamento entre organizações.
 
-## Estrutura principal
+O projeto inclui Dockerfile e configuração de Kamal de exemplo. Ajuste servidores, domínio, TLS e segredos antes de um deploy. Em produção, use `RAILS_ENV=production` para o worker ou o supervisor integrado ao Puma com `SOLID_QUEUE_IN_PUMA=true`.
 
-| Arquivo | Responsabilidade |
-| --- | --- |
-| `app/controllers/webhooks_controller.rb` | Recebimento e listagem dos eventos. |
-| `app/models/webhook_event.rb` | Validações do identificador externo e do tipo. |
-| `app/jobs/process_webhook_event_job.rb` | Processamento, contagem de tentativas e retry. |
-| `config/routes.rb` | Rotas da API. |
-| `config/database.yml` | Bancos SQLite por ambiente. |
-| `config/queue.yml` | Workers e dispatchers do Solid Queue. |
-| `test/` | Testes automatizados e fixtures. |
+Antes de integrar um provedor real, adapte os headers, assinatura, rotação de segredos e contrato de eventos à documentação dele. Ainda faltam controles como rate limiting, limites de payload, retenção de dados e observabilidade de produção. O simulador não confirma pagamentos com um banco.
 
-## Configuração e deploy
-
-Os bancos locais ficam em `storage/`. Em produção, a configuração separa os bancos principal, de fila, de cache e de cable.
-
-O projeto inclui `Dockerfile` e configuração de Kamal em `config/deploy.yml`. Os destinos e configurações de deploy são exemplos e precisam ser ajustados ao ambiente. Em produção, execute o Solid Queue por `ruby bin/jobs`, com `RAILS_ENV=production`, ou pelo supervisor integrado ao Puma ao definir `SOLID_QUEUE_IN_PUMA=true`.
-
-Chaves e credenciais devem ser configuradas separadamente no ambiente de destino. O repositório exclui `config/master.key`, `config/credentials.yml.enc`, `config/credentials/`, arquivos `.env*`, `.kamal/secrets*`, bancos locais e logs. Não copie segredos para código, exemplos ou commits.
-
-## Limitações atuais
-
-A API ainda não implementa autenticação nem verificação de assinatura do remetente. Os endpoints permitem receber eventos e consultar os payloads armazenados; essas proteções precisam ser implementadas antes de expor a aplicação a dados reais em um ambiente público.
-
-A deduplicação do recebimento e a verificação de status do job não garantem execução única de efeitos externos em cenários concorrentes.
+Chaves Rails, credenciais, arquivos `.env*`, segredos Kamal, bancos locais e logs ficam fora do Git. Nunca coloque valores reais em exemplos ou commits.

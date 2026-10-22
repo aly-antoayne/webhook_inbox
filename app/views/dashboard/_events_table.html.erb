@@ -1,0 +1,21 @@
+<div class="table-wrap">
+  <table>
+    <thead><tr><% unless local_assigns[:compact] %><th>HTTP</th><% end %><th>Identificador externo</th><th>Tipo</th><th>Estado</th><th>Tentativas</th><th>Recebido em</th><th>Ação</th></tr></thead>
+    <tbody>
+      <% events.each do |event| %>
+        <tr class="<%= 'failed-row' if event.status == 'failed' %>">
+          <% unless local_assigns[:compact] %><td><span class="http-method">POST</span></td><% end %>
+          <td class="id-cell"><%= link_to event.external_id, dashboard_event_path(event) %></td>
+          <td><span class="type-tag"><%= event.event_type %></span></td>
+          <td><%= status_badge(event.status) %></td>
+          <td><span class="mono"><%= event.attempts %></span> <small><%= event.attempts == 1 ? "tentativa" : "tentativas" %></small></td>
+          <td><time datetime="<%= event.created_at.iso8601 %>" class="mono"><%= event.created_at.strftime("%d/%m/%Y") %><br><%= event.created_at.strftime("%H:%M:%S") %></time></td>
+          <td><a class="table-link" href="<%= dashboard_event_path(event) %>">Ver detalhes <%= dashboard_icon("arrow") %></a></td>
+        </tr>
+      <% end %>
+      <% if events.empty? %>
+        <tr><td colspan="<%= local_assigns[:compact] ? 6 : 7 %>"><div class="empty-state"><%= dashboard_icon("inbox") %><h3>Nenhum evento encontrado</h3><p>Altere os filtros ou envie uma demonstração para começar.</p><a class="button secondary small" href="<%= dashboard_events_path %>">Limpar filtros</a></div></td></tr>
+      <% end %>
+    </tbody>
+  </table>
+</div>

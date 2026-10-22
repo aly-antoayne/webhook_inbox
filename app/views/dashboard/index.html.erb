@@ -1,0 +1,55 @@
+<% content_for :title, "Visão geral" %>
+<div class="page-heading">
+  <div><div class="title-line"><h1>Visão geral</h1><span class="tag">PIPELINE CONSOLE</span></div><p>Acompanhe o recebimento e o processamento dos seus webhooks.</p></div>
+  <div class="heading-actions">
+    <form method="get" action="/dashboard"><label class="sr-only" for="period">Período das métricas</label><select id="period" name="period"><option value="24h" <%= "selected" if @metrics.period == "24h" %>>Últimas 24 horas</option><option value="7d" <%= "selected" if @metrics.period == "7d" %>>Últimos 7 dias</option></select><button type="submit" class="button secondary small">Aplicar</button></form>
+    <% unless Rails.env.production? %><button class="button primary" data-open-demo><%= dashboard_icon("send") %> Enviar evento de teste</button><% end %>
+  </div>
+</div>
+<div class="metrics-grid">
+  <article class="metric-card"><div class="metric-label">Eventos recebidos <%= dashboard_icon("inbox") %></div><div class="metric-main"><strong class="metric-value"><%= number_with_delimiter(@metrics.total, delimiter: ".") %></strong><% if @metrics.change %><span class="<%= @metrics.change >= 0 ? 'green' : 'muted' %>"><%= @metrics.change.positive? ? "+" : "" %><%= @metrics.change %>%</span><% end %></div><div class="metric-footer"><%= @metrics.change ? "vs. janela anterior" : "Sem base no período anterior" %></div></article>
+  <article class="metric-card"><div class="metric-label">Processados <span class="green"><%= dashboard_icon("check") %></span></div><div class="metric-main"><strong class="metric-value"><%= number_with_delimiter(@metrics.counts.fetch("processed", 0), delimiter: ".") %></strong><span class="status-badge processed"><%= @metrics.success_rate %>% taxa</span></div><div class="metric-footer green">Concluídos entre os eventos do período</div></article>
+  <article class="metric-card"><div class="metric-label">Pendentes <span class="yellow"><%= dashboard_icon("clock") %></span></div><div class="metric-main"><strong class="metric-value"><%= @metrics.counts.fetch("pending", 0) %></strong><span class="status-badge pending">Em espera</span></div><div class="metric-footer yellow"><%= @metrics.counts.fetch("processing", 0) %> em processamento</div></article>
+  <article class="metric-card"><div class="metric-label">Falhas <span class="red"><%= dashboard_icon("alert") %></span></div><div class="metric-main"><strong class="metric-value"><%= @metrics.counts.fetch("failed", 0) %></strong><span class="status-badge failed">Atenção</span></div><div class="metric-footer"><a class="red" href="<%= dashboard_events_path(status: 'failed') %>">Revisar eventos com falha →</a></div></article>
+</div>
+<div class="chart-grid">
+  <section class="panel padded">
+    <div class="chart-title"><div><h2>Eventos recebidos por <%= @metrics.period == "7d" ? "dia" : "hora" %></h2><p>Volume de ingestão no período selecionado · UTC</p></div><div class="legend"><span>Volume</span><span class="errors">Falhas</span></div></div>
+    <div class="chart">
+      <% points = chart_points(@metrics.series) %>
+      <svg viewBox="0 0 700 210" role="img" aria-labelledby="chart-title chart-description" preserveAspectRatio="none">
+        <title id="chart-title">Volume de eventos recebidos</title><desc id="chart-description"><%= @metrics.series.map { |point| "#{point[:time].strftime('%d/%m %Hh')}: #{point[:count]} eventos, #{point[:failed]} falhas" }.join("; ") %></desc>
+        <defs><linearGradient id="volume-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="#a78bfa" stop-opacity=".35"/><stop offset="100%" stop-color="#a78bfa" stop-opacity="0"/></linearGradient></defs>
+        <% [30, 80, 130, 190].each do |y| %><line x1="0" x2="700" y1="<%= y %>" y2="<%= y %>" stroke="#2c3039" stroke-width="1"/><% end %>
+        <polygon points="0,190 <%= points %> 700,190" fill="url(#volume-fill)"/>
+        <polyline points="<%= points %>" fill="none" stroke="#cebdff" stroke-width="2.5" vector-effect="non-scaling-stroke"/>
+        <% maximum = [@metrics.series.map { |point| point[:count] }.max, 1].max %>
+        <% @metrics.series.each_with_index do |point, i| %><% if point[:failed] > 0 %><rect x="<%= (i * 690.0 / (@metrics.series.size - 1)).round %>" y="<%= 190 - (point[:failed] * 160.0 / maximum).round %>" width="7" height="<%= (point[:failed] * 160.0 / maximum).round %>" fill="#73313b" stroke="#ff8585" stroke-width=".5"/><% end %><% end %>
+      </svg>
+      <% if @metrics.total.zero? %><div class="chart-empty">Nenhum evento neste período</div><% end %>
+    </div>
+    <div class="chart-labels"><% @metrics.series.each_with_index do |point, index| %><% if index % (@metrics.period == "7d" ? 2 : 6) == 0 || index == @metrics.series.size - 1 %><span><%= point[:time].strftime(@metrics.period == "7d" ? "%d/%m" : "%H:00") %></span><% end %><% end %></div>
+  </section>
+  <section class="panel padded">
+    <div class="chart-title"><h2>Métricas de pipeline</h2><small class="purple"><%= @workers[:adapter] %></small></div>
+    <% if @workers[:available] %>
+      <% queue_total = [@workers[:counts].values.sum, 1].max %>
+      <% @workers[:counts].each do |label, count| %><div class="pipeline-stat"><div><span><%= label %></span><strong class="<%= label.include?('Falhas') ? 'red' : 'purple' %>"><%= count %> jobs</strong></div><div class="progress <%= 'red' if label.include?('Falhas') %>"><span style="width:<%= (count * 100.0 / queue_total).round %>%"></span></div></div><% end %>
+    <% else %><p class="muted"><%= @workers[:message] %></p><% end %>
+    <div class="security-status"><span class="eyebrow"><%= dashboard_icon("lock") %> Autenticidade dos webhooks</span><p><%= ENV["WEBHOOK_SIGNING_SECRET"].to_s.bytesize >= 32 ? "HMAC-SHA256 configurado" : "Segredo de assinatura não configurado" %></p><small>Chaves nunca são exibidas no painel.</small></div>
+  </section>
+</div>
+<section class="panel" id="events">
+  <div class="panel-header"><h2><%= dashboard_icon("table") %> Eventos recentes <span class="tag">Últimos 5 registros</span></h2><div class="panel-actions"><a class="button secondary small" href="<%= dashboard_events_path %>">Filtrar</a><a class="button secondary small" href="<%= dashboard_events_path %>">Ver todos os eventos <%= dashboard_icon("arrow") %></a></div></div>
+  <%= render "events_table", events: @events, compact: true %>
+</section>
+<section class="panel" id="orders">
+  <div class="panel-header"><h2><%= dashboard_icon("inbox") %> Pedidos e pagamentos</h2><small>10 atualizações mais recentes · pagamentos fictícios</small></div>
+  <div class="table-wrap compact"><table><thead><tr><th>Pedido</th><th>Valor</th><th>Estado</th><th>Atualizado em</th></tr></thead><tbody><% @orders.each do |order| %><tr><td class="id-cell"><%= order.external_id %></td><td><%= order.currency %> <%= number_with_precision(order.amount_cents / 100.0, precision: 2, separator: ",", delimiter: ".") %></td><td><%= status_badge(order.status) %></td><td class="mono"><%= dashboard_time(order.updated_at) %></td></tr><% end %><% if @orders.empty? %><tr><td colspan="4" class="empty-state">Nenhum pedido recebido. Envie uma demonstração para acompanhar o ciclo de pagamento.</td></tr><% end %></tbody></table></div>
+</section>
+<section class="panel padded" id="workers">
+  <div class="chart-title"><div><h2>Workers e fila</h2><p>Processos registrados no backend de jobs</p></div><span class="tag"><%= @workers[:adapter] %></span></div>
+  <% if @workers[:available] %>
+    <div class="table-wrap compact"><table><thead><tr><th>Processo</th><th>Tipo</th><th>Host / PID</th><th>Último heartbeat</th></tr></thead><tbody><% @workers[:processes].each do |process| %><tr><td class="id-cell"><%= process.name %></td><td><%= process.kind %></td><td class="mono"><%= process.hostname %> / <%= process.pid %></td><td class="mono"><%= dashboard_time(process.last_heartbeat_at) %></td></tr><% end %><% if @workers[:processes].empty? %><tr><td colspan="4" class="empty-state">Nenhum processo registrado. Inicie o worker com <code>bundle exec ruby bin/jobs --mode async</code>.</td></tr><% end %></tbody></table></div><p><small>O registro de um processo não comprova saúde. Confira o horário do heartbeat.</small></p>
+  <% else %><div class="notice"><%= @workers[:message] %></div><small>Os indicadores de eventos continuam disponíveis.</small><% end %>
+</section>
